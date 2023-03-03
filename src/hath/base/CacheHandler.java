@@ -35,6 +35,26 @@ import java.util.Enumeration;
 import java.util.List;
 import java.util.Hashtable;
 
+class CacheHandlerHelper {
+	private static long lastRecordTime = 0;
+	private static int filesProcessed = 0;
+
+	public static synchronized void recordFileAccess(){
+		filesProcessed++;
+		
+		long currentTime = System.currentTimeMillis();
+		long timeDiff = currentTime - lastRecordTime;
+
+		if(timeDiff > 1000){
+			double filesPerSecond = filesProcessed / (timeDiff / 1000.0);
+			Out.info("CacheHandler: " + filesPerSecond + " files/s");
+
+			lastRecordTime = currentTime;
+			filesProcessed = 0;
+		}
+	}
+}
+
 public class CacheHandler {
 	private static final int MEMORY_TABLE_ELEMENTS = 1048576;
 	private Hashtable<String, Long> staticRangeOldest = null;
@@ -460,6 +480,8 @@ public class CacheHandler {
 						}
 
 						oldestLastModified = Math.min(oldestLastModified, fileLastModified);
+
+						CacheHandlerHelper.recordFileAccess();
 
 						if(cacheCount % printFreq == 0) {
 							Out.info("CacheHandler: Loaded " + cacheCount + " files so far...");
