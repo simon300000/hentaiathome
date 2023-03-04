@@ -475,7 +475,7 @@ public class CacheHandler {
 							cfile.delete();
 						}
 						else {
-							addFileToActiveCache(hvFile);
+							int currentCacheCount = addFileToActiveCache(hvFile);
 							long fileLastModified = cfile.lastModified();
 
 							if(fileLastModified > recentlyAccessedCutoff) {
@@ -487,8 +487,8 @@ public class CacheHandler {
 
 							CacheHandlerHelper.recordFileAccess();
 
-							if(cacheCount % printFreq == 0) {
-								Out.info("CacheHandler: Loaded " + cacheCount + " files so far...");
+							if(currentCacheCount % printFreq == 0) {
+								Out.info("CacheHandler: Loaded " + currentCacheCount + " files so far...");
 							}
 						}
 					}
@@ -750,10 +750,11 @@ public class CacheHandler {
 		return false;
 	}
 
-	private synchronized void addFileToActiveCache(HVFile hvFile) {
+	private synchronized int addFileToActiveCache(HVFile hvFile) {
 		++cacheCount;
 		cacheSize += hvFile.getSize();
 		updateStats();
+		return cacheCount;
 	}
 
 	private void deleteFileFromCache(HVFile toRemove) {
