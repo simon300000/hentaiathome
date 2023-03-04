@@ -1,3 +1,7 @@
+Multithreaded startupInitCache is around 5x faster on some systems.
+
+Original README:
+
 Make sure to read and understand the license for this program, found in the file LICENSE or at http://www.gnu.org/licenses/gpl.txt, before you start playing with it.
 
 In order to build Hentai@Home, you need the following:
