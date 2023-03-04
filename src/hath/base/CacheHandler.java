@@ -31,8 +31,10 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Hashtable;
 
 class CacheHandlerHelper {
@@ -403,12 +405,11 @@ public class CacheHandler {
 		// markRecentlyAccessed	- marks files with timestamp > 7 days in the LRU cache
 
 		// if --verify-cache was specified, we use this shiny new FileValidator to avoid having to create a new MessageDigest and ByteBuffer for every single file in the cache
-		FileValidator validator = null;
+		FileValidator validator = Settings.isVerifyCache() ? new FileValidator() : null;
 		int printFreq;
 
 		if(Settings.isVerifyCache()) {
 			Out.info("CacheHandler: Loading cache with full file verification. Depending on the size of your cache, this can take a long time.");
-			validator = new FileValidator();
 			printFreq = 1000;
 		}
 		else {
@@ -417,14 +418,16 @@ public class CacheHandler {
 		}
 		
 		long recentlyAccessedCutoff = System.currentTimeMillis() - 604800000;
-		int foundStaticRanges = 0;
+		AtomicInteger foundStaticRanges = new AtomicInteger(0);
+
+		ArrayList<Thread> threads = new ArrayList<>(512);
 
 		// cache register pass
 		for(File l1dir : Tools.listSortedFiles(cachedir)) {
 			if(!l1dir.isDirectory()) {
 				continue;
 			}
-			
+
 			File[] l2dirs = Tools.listSortedFiles(l1dir);
 
 			if(l2dirs == null) {
@@ -433,68 +436,83 @@ public class CacheHandler {
 				continue;
 			}
 
-			for(File l2dir : l2dirs) {
-				// the garbage, it must be collected
-				System.gc();
+			threads.add(new Thread(() -> {
+				for(File l2dir : l2dirs) {
+					// the garbage, it must be collected
+					System.gc();
 
-				if(!l2dir.isDirectory()) {
-					continue;
-				}
-
-				File[] files = Tools.listSortedFiles(l2dir);
-				
-				if(files == null) {
-					Out.warning("CacheHandler: Unable to access " + l2dir + "; check permissions and I/O errors.");
-					continue;
-				}
-
-				if(files.length == 0) {
-					l2dir.delete();
-					continue;
-				}
-
-				long oldestLastModified = System.currentTimeMillis();
-
-				for(File cfile : files) {
-					if(!cfile.isFile()) {
+					if(!l2dir.isDirectory()) {
 						continue;
 					}
 
-					HVFile hvFile = HVFile.getHVFileFromFile(cfile, validator);
-
-					if(hvFile == null) {
-						Out.debug("CacheHandler: The file " + cfile + " was corrupt.");
-						cfile.delete();
+					File[] files = Tools.listSortedFiles(l2dir);
+					
+					if(files == null) {
+						Out.warning("CacheHandler: Unable to access " + l2dir + "; check permissions and I/O errors.");
+						continue;
 					}
-					else if( !Settings.isStaticRange(hvFile.getFileid()) ) {
-						Out.debug("CacheHandler: The file " + cfile + " was not in an active static range.");
-						cfile.delete();
-					}
-					else {
-						addFileToActiveCache(hvFile);
-						long fileLastModified = cfile.lastModified();
 
-						if(fileLastModified > recentlyAccessedCutoff) {
-							// if lastModified is from the last week, mark this as recently accessed in the LRU cache. (this does not update the metadata)
-							markRecentlyAccessed(hvFile, true);
+					if(files.length == 0) {
+						l2dir.delete();
+						continue;
+					}
+
+					long oldestLastModified = System.currentTimeMillis();
+
+					for(File cfile : files) {
+						if(!cfile.isFile()) {
+							continue;
 						}
 
-						oldestLastModified = Math.min(oldestLastModified, fileLastModified);
+						HVFile hvFile = HVFile.getHVFileFromFile(cfile, validator);
 
-						CacheHandlerHelper.recordFileAccess();
+						if(hvFile == null) {
+							Out.debug("CacheHandler: The file " + cfile + " was corrupt.");
+							cfile.delete();
+						}
+						else if( !Settings.isStaticRange(hvFile.getFileid()) ) {
+							Out.debug("CacheHandler: The file " + cfile + " was not in an active static range.");
+							cfile.delete();
+						}
+						else {
+							addFileToActiveCache(hvFile);
+							long fileLastModified = cfile.lastModified();
 
-						if(cacheCount % printFreq == 0) {
-							Out.info("CacheHandler: Loaded " + cacheCount + " files so far...");
+							if(fileLastModified > recentlyAccessedCutoff) {
+								// if lastModified is from the last week, mark this as recently accessed in the LRU cache. (this does not update the metadata)
+								markRecentlyAccessed(hvFile, true);
+							}
+
+							oldestLastModified = Math.min(oldestLastModified, fileLastModified);
+
+							CacheHandlerHelper.recordFileAccess();
+
+							if(cacheCount % printFreq == 0) {
+								Out.info("CacheHandler: Loaded " + cacheCount + " files so far...");
+							}
 						}
 					}
-				}
 
-				String staticRange = l1dir.getName() + l2dir.getName();
-				staticRangeOldest.put(staticRange, oldestLastModified);
+					String staticRange = l1dir.getName() + l2dir.getName();
+					staticRangeOldest.put(staticRange, oldestLastModified);
 
-				if(++foundStaticRanges % 100 == 0) {
-					Out.info("CacheHandler: Found " + foundStaticRanges + " static ranges with files so far...");
+					int currentFoundStaticRanges = foundStaticRanges.incrementAndGet();
+					if(currentFoundStaticRanges % 100 == 0) {
+						Out.info("CacheHandler: Found " + currentFoundStaticRanges + " static ranges with files so far...");
+					}
 				}
+			}));
+		}
+
+		for (Thread thread : threads) {
+			thread.start();
+		}
+
+		for (Thread thread : threads) {
+			try {
+				thread.join();
+			} catch (InterruptedException e) {
+				Out.warning("CacheHandler: Thread interrupted while waiting for cache initialization to finish");
 			}
 		}
 
@@ -732,7 +750,7 @@ public class CacheHandler {
 		return false;
 	}
 
-	private void addFileToActiveCache(HVFile hvFile) {
+	private synchronized void addFileToActiveCache(HVFile hvFile) {
 		++cacheCount;
 		cacheSize += hvFile.getSize();
 		updateStats();
